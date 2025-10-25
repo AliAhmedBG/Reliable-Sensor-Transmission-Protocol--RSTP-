@@ -1,8 +1,9 @@
 /*
  * Replace the following string of 0s with your student number
- * 000000000
+ * 230071010
  */
-import java.io.File;
+import java.io.*;
+import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.SocketException;
@@ -60,8 +61,57 @@ public class Protocol {
 	 * This method sends protocol metadata to the server.
 	 * See coursework specification for full details.	
 	 */
-	public void sendMetadata()   { 
-		System.exit(0);
+	public void sendMetadata()   {
+		// variable which holds the number of lines in the csv file
+		int lineCount = 0;
+
+		try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
+			// increments the lineCount variable if there is another line until there are no more
+			while (reader.readLine() != null) {
+				lineCount++;
+			}
+
+			// fileTotalReadings is set to be the number of lines in the csv file
+			fileTotalReadings = lineCount;
+
+			// outputs to the user the number of lines in the file
+			System.out.println("Client: Total numer of lines = " + fileTotalReadings);
+		}
+
+		// handles errors by first printing out that there is one and then printing the stack trace and closing the program
+		catch (IOException e) {
+			System.out.println("Client: Error reading file");
+			e.printStackTrace();
+			socket.close();
+			System.exit(0);
+		}
+
+		// attaches the number of lines, the output file name and size to a string variable spererated by commas
+		String payLoad = fileTotalReadings + "," + outputFileName + "," + maxPatchSize;
+
+		// instantiates a segment object with all the parameters made above
+		Segment metaSegment = new Segment(0, SegmentType.Meta, payLoad, payLoad.length());
+
+		try {
+			// creates an output stream which collects the bytes and wraps it in an objectOutputstream
+			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
+			ObjectOutputStream os = new ObjectOutputStream(outputStream);
+			os.writeObject(metaSegment);
+
+			// the data variable now contains all the bytes that represent the metadata
+			byte[] data = outputStream.toByteArray();
+
+			// create a packet containing the byte array to send to the server
+			DatagramPacket packet = new DatagramPacket(data, data.length, ipAddress, portNumber);
+
+			// sends the packet to the server
+			socket.send(packet);
+
+			System.out.println("Client: Metadata sent successfully");
+		}
+		catch (IOException e) {
+			System.out.println("Client: Error sending metadata");
+		}
 	} 
 
 
