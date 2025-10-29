@@ -3,6 +3,7 @@
  * 230071010
  */
 import java.io.*;
+import java.util.*;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
@@ -65,6 +66,7 @@ public class Protocol {
 		// variable which holds the number of lines in the csv file
 		int lineCount = 0;
 
+		// creates a BufferedReader to read the contents of the input file line by line
 		try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
 			// increments the lineCount variable if there is another line until there are no more
 			while (reader.readLine() != null) {
@@ -94,12 +96,12 @@ public class Protocol {
 
 		try {
 			// creates an output stream which collects the bytes and wraps it in an objectOutputstream
-			ByteArrayOutputStream outputStream = new ByteArrayOutputStream();
-			ObjectOutputStream os = new ObjectOutputStream(outputStream);
-			os.writeObject(metaSegment);
+			ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
+			ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteOutputStream);
+			objectOutputStream.writeObject(metaSegment);
 
 			// the data variable now contains all the bytes that represent the metadata
-			byte[] data = outputStream.toByteArray();
+			byte[] data = byteOutputStream.toByteArray();
 
 			// create a packet containing the byte array to send to the server
 			DatagramPacket packet = new DatagramPacket(data, data.length, ipAddress, portNumber);
@@ -119,17 +121,109 @@ public class Protocol {
 	 * This method read and send the next data segment (dataSeg) to the server. 
 	 * See coursework specification for full details.
 	 */
-	public void readAndSend() { 
-		System.exit(0);
+	public void readAndSend() {
+		// reads the file line by line
+		try (BufferedReader reader = new BufferedReader(new FileReader(inputFile))) {
+
+			// skips lines that have already been sent
+			for (int i = 0; i < sentReadings; i++) {
+				reader.readLine();
+			}
+
+			//creates an array to hold the current patch and holds the current line being read and a counter for the line
+			List<String> curPatch = new ArrayList<>();
+			String curLine;
+			int count = 0;
+
+		/*loops through the rest of the file while setting curline to the line currently being read and adding it to
+		the array until maxpatch is reached
+		 */
+			while ((curLine = reader.readLine()) != null && count < maxPatchSize) {
+				curPatch.add(curLine);
+				count++;
+			}
+
+			// adds the contents of curpatch to a payload variable and seperates all contents using a ;
+			String payLoad = String.join(";", curPatch);
+
+			// checks if the patch is empty and the following message is sent if it is
+			if (curPatch.isEmpty()) {
+				System.out.println("Client: No more data to send.");
+				return;
+			}
+
+			// sets up the segment of type data
+			int seqNum = totalSegments + 1;
+			dataSeg = new Segment(seqNum, SegmentType.Data, payLoad, payLoad.length());
+			// updates counter
+			totalSegments++;
+
+			// similarly to the metadata segment sending
+			ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
+			ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteOutputStream);
+			objectOutputStream.writeObject(dataSeg);
+
+			byte[] data = byteOutputStream.toByteArray();
+
+			DatagramPacket packet = new DatagramPacket(data, data.length, ipAddress, portNumber);
+			socket.send(packet);
+
+			// outouts data about what the client has sent out for debug purposes
+			System.out.println("CLient: Send: DATA [SEQ#" + seqNum + "](" + "Size:" + dataSeg.getSize() + ", Checksum:" +
+					dataSeg.getChecksum() + ", Content:" + dataSeg.getPayLoad() + ")");
+
+			// increases sent readings by the patch size so that messages arent resent
+			sentReadings += curPatch.size();
+		} catch (IOException e) {
+			System.out.println("Client: Error sending data segment");
+			e.printStackTrace();
+		}
 	}
 
-	/* 
+
+
+
+
+		/*
 	 * This method receives the current Ack segment (ackSeg) from the server 
 	 * See coursework specification for full details.
 	 */
-	public boolean receiveAck() { 
-		System.exit(0);
-		return false;
+	public boolean receiveAck() {
+		// waits for sservers ack before sending next batch
+		try {
+			// prepares bytes array and datagrampacket
+			byte[] buffer = new byte[Protocol.MAX_Segment_SIZE];
+			DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+
+			// blocks until the server sends something
+			socket.receive(packet);
+
+			// wrap bytes into streams to turn them back into objects
+			ByteArrayInputStream byteInputStream = new ByteArrayInputStream(packet.getData());
+			ObjectInputStream objectInputStream = new ObjectInputStream(byteInputStream);
+			Segment ackSeg = (Segment) objectInputStream.readObject();
+
+			// first checks if the segment type is ACk
+			if (ackSeg.getType() == SegmentType.Ack && ackSeg.getSeqNum() == dataSeg.getSeqNum()) {
+				// if so then return info on the ack and return ttrue
+				System.out.println("Client: Receive: ACK [SEQ#" + ackSeg.getSeqNum() + "]");
+				System.out.println("\t\t>>>>>>> NETWORK: ACK received successfully <<<<<<<<<");
+				System.out.println("----------------------------------------------------");
+				return true;
+			}
+			else {
+				// if not then print an error and return false
+				System.out.println("Client: Error — invalid ACK or sequence mismatch");
+				return false;
+			}
+		}
+		catch (IOException | ClassNotFoundException e) {
+			System.out.println("Client: Error receiving ACK");
+			e.printStackTrace();
+			return false;
+		}
+
+
 	}
 
 	/* 
