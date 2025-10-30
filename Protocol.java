@@ -4,11 +4,7 @@
  */
 import java.io.*;
 import java.util.*;
-import java.net.DatagramPacket;
-import java.net.DatagramSocket;
-import java.net.InetAddress;
-import java.net.SocketException;
-import java.net.UnknownHostException;
+import java.net.*;
 
 public class Protocol {
 
@@ -149,11 +145,14 @@ public class Protocol {
 			// checks if the patch is empty and the following message is sent if it is
 			if (curPatch.isEmpty()) {
 				System.out.println("Client: No more data to send.");
-				return;
+				System.out.println("Client: All data has been successfully transmitted and acknowledged. Exiting.");
+				socket.close();
+				System.exit(0);
+
 			}
 
 			// sets up the segment of type data
-			int seqNum = totalSegments + 1;
+			int seqNum = totalSegments % 2;
 			dataSeg = new Segment(seqNum, SegmentType.Data, payLoad, payLoad.length());
 			// updates counter
 			totalSegments++;
@@ -217,21 +216,88 @@ public class Protocol {
 				return false;
 			}
 		}
+		// throws an exception if there was an error receiving an ack
 		catch (IOException | ClassNotFoundException e) {
 			System.out.println("Client: Error receiving ACK");
 			e.printStackTrace();
 			return false;
 		}
-
-
 	}
 
 	/* 
 	 * This method starts a timer and does re-transmission of the Data segment 
 	 * See coursework specification for full details.
 	 */
-	public void startTimeoutWithRetransmission()   {  
-		System.exit(0);
+	public void startTimeoutWithRetransmission()   {
+		try {
+			// sets the timeout
+			socket.setSoTimeout(timeout);
+			currRetry = 0;
+
+			// runs constantly
+			while (true) {
+				try {
+					// tries to receive the aknowledgement for the last segment
+					if (receiveAck()) {
+						// resets retry counter and stop waiting
+						currRetry = 0;
+						break;
+					}
+					else {
+						// received an incorrect ack so incremenets retry
+						currRetry++;
+						if (currRetry > maxRetries) {
+							// exits if maxretries has been reached
+							System.out.println("Client: ERROR — maximum retries reached. Exiting.");
+							System.exit(0);
+						}
+
+						// if the ack is ivalid it will try to resend it
+						System.out.println("Client: Invalid ACK — resending segment again (retry " + currRetry + ")");
+
+						ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
+						ObjectOutputStream objectOutputStream= new ObjectOutputStream(byteOutputStream);
+
+						objectOutputStream.writeObject(dataSeg);
+
+						byte[] bytes = byteOutputStream.toByteArray();
+
+						DatagramPacket packet = new DatagramPacket(bytes, bytes.length, ipAddress, portNumber);
+						socket.send(packet);
+						totalSegments++;
+					}
+
+				}
+				catch (SocketTimeoutException e) {
+					// happens when it times out before and ack is received
+					currRetry++;
+					// exits if max retries has been reached
+					if (currRetry > maxRetries) {
+						System.out.println("Client: TIMEOUT ALERT — maximum retries reached. Exiting...");
+						System.exit(0);
+					}
+
+					// resends segment when timeout occurs
+					System.out.println("Client: TIMEOUT ALERT");
+					System.out.println("Client: Resending the same segment again, current retry " + currRetry);
+
+					ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
+					ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteOutputStream);
+					objectOutputStream.writeObject(dataSeg);
+					byte[] bytes = byteOutputStream.toByteArray();
+
+					DatagramPacket packet = new DatagramPacket(bytes, bytes.length, ipAddress, portNumber);
+					socket.send(packet);
+					totalSegments++;
+
+				}
+			}
+		}
+		// final catch for if an error occurs during timeout and retransmissions
+		catch (IOException e) {
+			System.out.println("Client: Error during timeout and retransmission");
+			e.printStackTrace();
+		}
 	}
 
 
@@ -240,7 +306,131 @@ public class Protocol {
 	 * See coursework specification for full details.
 	 */
 	public void receiveWithAckLoss(DatagramSocket serverSocket, float loss)  {
-		System.exit(0);
+		// keeps track of efficiency
+		int totalBytes = 0;
+		int usefulBytes = 0;
+
+		// local list that will contain the readings
+		List<String> receivedLines = new ArrayList<>();
+		int readingCount = 0;
+
+
+		// detects duplicates
+		int expectedSeqNum = 0;
+		Segment lastAck = null;
+
+		try {
+			// sets a timeout
+			serverSocket.setSoTimeout(2000);
+
+			// starts a constant loop
+			while (true) {
+				//sets up a buffer for receiving
+				byte[] buffer = new byte[MAX_Segment_SIZE];
+				DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+
+				try {
+					// attempts to receive the packet
+					serverSocket.receive(packet);
+				}
+				catch (SocketTimeoutException e) {
+					System.out.println("Server: Timeout waiting for new Data segment. Exiting server.");
+					break;
+				}
+
+				// turns the packet back into a Segment
+				ByteArrayInputStream byteInputStream = new ByteArrayInputStream(packet.getData());
+				ObjectInputStream objectInputStream = new ObjectInputStream(byteInputStream);
+				Segment dataSeg = (Segment) objectInputStream.readObject();
+
+				totalBytes += dataSeg.getSize();
+
+				// outputs data on the packet
+				System.out.println("Server: Receive: DATA [SEQ#" + dataSeg.getSeqNum() + "] (Size:" +
+						dataSeg.getSize() + ", Checksum:" + dataSeg.getChecksum() + ", Content:" +
+						dataSeg.getPayLoad() + ")");
+
+				// validates the checksum before processing
+				if (!dataSeg.isValid()) {
+					System.out.println("Server: Invalid checksum detected, segment discarded.");
+					continue;
+				}
+
+				// checks if the data segment is a duplicate
+				if (dataSeg.getSeqNum() == expectedSeqNum) {
+					usefulBytes += dataSeg.getSize();
+
+					// extract and store readings from the received payload
+					String payload = dataSeg.getPayLoad();
+					if (payload != null && !payload.isEmpty()) {
+						String[] readings = payload.split(";");
+						Collections.addAll(receivedLines, readings);
+					}
+
+					// creates the ack
+					Segment ack = new Segment(dataSeg.getSeqNum(), SegmentType.Ack, "", 0);
+					lastAck = ack;
+
+					// randomly decides if this ack is lost
+					if (isLost(loss)) {
+						System.out.println("Server: Simulating ACK loss. ACK[SEQ#" + dataSeg.getSeqNum() + "] is lost.");
+					}
+					else {
+						Server.sendAck(serverSocket, packet.getAddress(), packet.getPort(), dataSeg.getSeqNum());
+						System.out.println("Server: Send: ACK [SEQ#" + ack.getSeqNum() + "]");
+						System.out.println("\t\t>>>>>>> NETWORK: ACK sent successfully <<<<<<<<<");
+					}
+
+					// alternates between 0 and 1 refernced from geeksforgeeks
+					expectedSeqNum = (expectedSeqNum == 1) ? 0 : 1;
+				}
+				else {
+					// tells the user that duplicate data was received
+					System.out.println("Duplicate data is detected");
+					System.out.println("Sending an Ack of the previous segment");
+
+					// checks if lastAck is null and acts accordingly if so
+					if (lastAck != null) {
+						if (isLost(loss)) {
+							System.out.println("Server: Simulating ACK loss. ACK[SEQ#" + lastAck.getSeqNum() + "] is lost.");
+						} else {
+							Server.sendAck(serverSocket, packet.getAddress(), packet.getPort(), lastAck.getSeqNum());
+							System.out.println("Server: Send: ACK [SEQ#" + lastAck.getSeqNum() + "]");
+							System.out.println("\t\t>>>>>>> NETWORK: ACK is sent successfully <<<<<<<<<");
+						}
+					} else {
+						System.out.println("Server: No previous ACK to resend (this shouldn't normally happen)");
+					}
+				}
+				System.out.println("----------------------------------------------------");
+			}
+
+			// write all received lines to the server's output file
+			try (BufferedWriter writer = new BufferedWriter(new FileWriter(instance.outputFileName))) {
+				for (String line : receivedLines) {
+					writer.write(line);
+					writer.newLine();
+				}
+				System.out.println("Server: Data successfully written to " + instance.outputFileName);
+			} catch (IOException e) {
+				System.out.println("Server: Error writing received data to file.");
+				e.printStackTrace();
+			}
+
+
+			// outputs info to the user about the file written to, total bytes etc
+			System.out.println("Server: Data written to " + instance.outputFileName);
+			System.out.println("Total Bytes: " + totalBytes);
+			System.out.println("Useful Bytes: " + usefulBytes);
+			System.out.println("Efficiency: " + ((float) usefulBytes / totalBytes) * 100 + " %");
+
+		}
+		// throws an exception for if theres an error receiving the data segment
+		catch (IOException | ClassNotFoundException e) {
+			System.out.println("Server: Error receiving Data segment");
+			e.printStackTrace();
+		}
+
 	}
 
 
