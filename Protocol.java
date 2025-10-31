@@ -151,19 +151,19 @@ public class Protocol {
 
 			}
 
-			// sets up the segment of type data
+			// sets sequence number between 0 and 1
 			int seqNum = totalSegments % 2;
+			// sets up the segment of type data
 			dataSeg = new Segment(seqNum, SegmentType.Data, payLoad, payLoad.length());
-			// updates counter
 			totalSegments++;
 
-			// similarly to the metadata segment sending
+			// serializes and sends the data segment
 			ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
 			ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteOutputStream);
 			objectOutputStream.writeObject(dataSeg);
-
 			byte[] data = byteOutputStream.toByteArray();
 
+			//sets up the packey
 			DatagramPacket packet = new DatagramPacket(data, data.length, ipAddress, portNumber);
 			socket.send(packet);
 
@@ -197,22 +197,22 @@ public class Protocol {
 			// blocks until the server sends something
 			socket.receive(packet);
 
-			// wrap bytes into streams to turn them back into objects
+			// Deserializes the received object into a Segment
 			ByteArrayInputStream byteInputStream = new ByteArrayInputStream(packet.getData());
 			ObjectInputStream objectInputStream = new ObjectInputStream(byteInputStream);
 			Segment ackSeg = (Segment) objectInputStream.readObject();
 
-			// first checks if the segment type is ACk
+			// first checks if the segment type is an ack of the correct seqnum
 			if (ackSeg.getType() == SegmentType.Ack && ackSeg.getSeqNum() == dataSeg.getSeqNum()) {
 				// if so then return info on the ack and return ttrue
 				System.out.println("Client: Receive: ACK [SEQ#" + ackSeg.getSeqNum() + "]");
-				System.out.println("\t\t>>>>>>> NETWORK: ACK received successfully <<<<<<<<<");
+				System.out.println("\t\t>>>>>>> NETWORK: ACK received successfully <<<<<<<<");
 				System.out.println("----------------------------------------------------");
 				return true;
 			}
 			else {
 				// if not then print an error and return false
-				System.out.println("Client: Error — invalid ACK or sequence mismatch");
+				System.out.println("Client: Error - invalid ACK or sequence mismatch");
 				return false;
 			}
 		}
@@ -230,16 +230,13 @@ public class Protocol {
 	 */
 	public void startTimeoutWithRetransmission()   {
 		try {
-			// sets the timeout
 			socket.setSoTimeout(timeout);
 			currRetry = 0;
 
-			// runs constantly
 			while (true) {
 				try {
-					// tries to receive the aknowledgement for the last segment
 					if (receiveAck()) {
-						// resets retry counter and stop waiting
+						// resets retry counter and stops waiting if ack received
 						currRetry = 0;
 						break;
 					}
@@ -281,6 +278,7 @@ public class Protocol {
 					System.out.println("Client: TIMEOUT ALERT");
 					System.out.println("Client: Resending the same segment again, current retry " + currRetry);
 
+					// retransmits the packet
 					ByteArrayOutputStream byteOutputStream = new ByteArrayOutputStream();
 					ObjectOutputStream objectOutputStream = new ObjectOutputStream(byteOutputStream);
 					objectOutputStream.writeObject(dataSeg);
@@ -293,7 +291,7 @@ public class Protocol {
 				}
 			}
 		}
-		// final catch for if an error occurs during timeout and retransmissions
+		// final catch for if an error occurs when the program times out or during retransmission
 		catch (IOException e) {
 			System.out.println("Client: Error during timeout and retransmission");
 			e.printStackTrace();
@@ -306,7 +304,6 @@ public class Protocol {
 	 * See coursework specification for full details.
 	 */
 	public void receiveWithAckLoss(DatagramSocket serverSocket, float loss)  {
-		// keeps track of efficiency
 		int totalBytes = 0;
 		int usefulBytes = 0;
 
@@ -323,7 +320,6 @@ public class Protocol {
 			// sets a timeout
 			serverSocket.setSoTimeout(2000);
 
-			// starts a constant loop
 			while (true) {
 				//sets up a buffer for receiving
 				byte[] buffer = new byte[MAX_Segment_SIZE];
@@ -338,14 +334,14 @@ public class Protocol {
 					break;
 				}
 
-				// turns the packet back into a Segment
+				// deserializes the data segment
 				ByteArrayInputStream byteInputStream = new ByteArrayInputStream(packet.getData());
 				ObjectInputStream objectInputStream = new ObjectInputStream(byteInputStream);
 				Segment dataSeg = (Segment) objectInputStream.readObject();
 
 				totalBytes += dataSeg.getSize();
 
-				// outputs data on the packet
+				// outputs info on the packet
 				System.out.println("Server: Receive: DATA [SEQ#" + dataSeg.getSeqNum() + "] (Size:" +
 						dataSeg.getSize() + ", Checksum:" + dataSeg.getChecksum() + ", Content:" +
 						dataSeg.getPayLoad() + ")");
@@ -367,42 +363,41 @@ public class Protocol {
 						Collections.addAll(receivedLines, readings);
 					}
 
-					// creates the ack
+					// creates the ack and possibly loses it
 					Segment ack = new Segment(dataSeg.getSeqNum(), SegmentType.Ack, "", 0);
 					lastAck = ack;
 
-					// randomly decides if this ack is lost
+					// decides if this ack is lost
 					if (isLost(loss)) {
 						System.out.println("Server: Simulating ACK loss. ACK[SEQ#" + dataSeg.getSeqNum() + "] is lost.");
 					}
 					else {
 						Server.sendAck(serverSocket, packet.getAddress(), packet.getPort(), dataSeg.getSeqNum());
 						System.out.println("Server: Send: ACK [SEQ#" + ack.getSeqNum() + "]");
-						System.out.println("\t\t>>>>>>> NETWORK: ACK sent successfully <<<<<<<<<");
+						System.out.println("\t\t>>>>>>> NETWORK: ACK sent successfully <<<<<<<");
 					}
 
-					// alternates between 0 and 1 refernced from geeksforgeeks
+					// alternates expectedseqnum between 0 and 1
 					expectedSeqNum = (expectedSeqNum == 1) ? 0 : 1;
 				}
 				else {
 					// tells the user that duplicate data was received
 					System.out.println("Duplicate data is detected");
-					System.out.println("Sending an Ack of the previous segment");
+					System.out.println("Sending Ack of the previous segment");
 
-					// checks if lastAck is null and acts accordingly if so
 					if (lastAck != null) {
 						if (isLost(loss)) {
-							System.out.println("Server: Simulating ACK loss. ACK[SEQ#" + lastAck.getSeqNum() + "] is lost.");
+							System.out.println("Server: Simulating ACk loss. ACK[SEQ#" + lastAck.getSeqNum() + "] is lost.");
 						} else {
 							Server.sendAck(serverSocket, packet.getAddress(), packet.getPort(), lastAck.getSeqNum());
 							System.out.println("Server: Send: ACK [SEQ#" + lastAck.getSeqNum() + "]");
 							System.out.println("\t\t>>>>>>> NETWORK: ACK is sent successfully <<<<<<<<<");
 						}
 					} else {
-						System.out.println("Server: No previous ACK to resend (this shouldn't normally happen)");
+						System.out.println("Server: No previous ACK to resend (shouldn't normally happen)");
 					}
 				}
-				System.out.println("----------------------------------------------------");
+				System.out.println("------------------------------------------------------");
 			}
 
 			// write all received lines to the server's output file
@@ -412,14 +407,15 @@ public class Protocol {
 					writer.newLine();
 				}
 				System.out.println("Server: Data successfully written to " + instance.outputFileName);
-			} catch (IOException e) {
+			}
+			// throws exception if theres an error writing the data to the file
+			catch (IOException e) {
 				System.out.println("Server: Error writing received data to file.");
 				e.printStackTrace();
 			}
 
 
 			// outputs info to the user about the file written to, total bytes etc
-			System.out.println("Server: Data written to " + instance.outputFileName);
 			System.out.println("Total Bytes: " + totalBytes);
 			System.out.println("Useful Bytes: " + usefulBytes);
 			System.out.println("Efficiency: " + ((float) usefulBytes / totalBytes) * 100 + " %");
